@@ -1,12 +1,9 @@
 cmake_minimum_required(VERSION 3.17)
+include(CMakePrintHelpers)
 find_package(Python COMPONENTS Interpreter)
 
 if (NOT DEFINED BOARD)
   message(FATAL_ERROR "BOARD is not defined")
-endif ()
-
-if (NOT DEFINED TOOLCHAIN)
-  set(TOOLCHAIN gcc)
 endif ()
 
 # include board specific
@@ -21,15 +18,20 @@ else ()
   set(JLINK_DEVICE ${MCU_VARIANT}_xxaa)
 endif ()
 
-set(CMAKE_TOOLCHAIN_FILE ${CMAKE_CURRENT_LIST_DIR}/cmake/toolchain/arm_${TOOLCHAIN}.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/toolchain/arm_gcc.cmake)
 
-project(Adafruit_nRF52_Bootloader C ASM)
+set(NRFX_DIR ${CMAKE_CURRENT_LIST_DIR}/lib/nrfx)
+set(SDK11_DIR ${CMAKE_CURRENT_LIST_DIR}/lib/sdk11/components)
+set(SDK_DIR ${CMAKE_CURRENT_LIST_DIR}/lib/sdk/components)
+set(TINYUSB_DIR ${CMAKE_CURRENT_LIST_DIR}/lib/tinyusb/src)
+set(TCRYPT_DIR ${CMAKE_CURRENT_LIST_DIR}/lib/tinycrypt/lib)
 
-set(NRFX ${CMAKE_CURRENT_LIST_DIR}/lib/nrfx)
-set(SDK11 ${CMAKE_CURRENT_LIST_DIR}/lib/sdk11/components)
-set(SDK ${CMAKE_CURRENT_LIST_DIR}/lib/sdk/components)
-set(SOFTDEVICE ${CMAKE_CURRENT_LIST_DIR}/lib/softdevice)
-set(TUSB ${CMAKE_CURRENT_LIST_DIR}/lib/tinyusb/src)
+option(DEFAULT_TO_OTA_DFU "Default to OTA DFU instead of Serial DFU" OFF)
+option(SIGNED_FW "Enable signed firmware verification" OFF)
+option(DUALBANK_FW "Enable dual bank DFU support" OFF)
+option(FORCE_UF2 "Force UF2 support even with SIGNED_FW" OFF)
+set(SIGNED_FW_QX "" CACHE STRING "Public key Qx (comma-separated bytes)")
+set(SIGNED_FW_QY "" CACHE STRING "Public key Qy (comma-separated bytes)")
 
 set(UF2CONV_PY ${CMAKE_CURRENT_LIST_DIR}/lib/uf2/utils/uf2conv.py)
 set(UF2_FAMILY_ID_BOOTLOADER 0xd663823c)
@@ -37,17 +39,13 @@ set(UF2_FAMILY_ID_BOOTLOADER 0xd663823c)
 #-------------------
 # Bootloader
 #-------------------
-set(CMAKE_EXECUTABLE_SUFFIX .elf)
-add_executable(bootloader)
-
-# SD_VERSION can be overwritten by board.cmake
-if(NOT DEFINED SD_VERSION)
-  set(SD_VERSION 6.1.1)
+if (NOT DEFINED CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "")
+  set(CMAKE_BUILD_TYPE MinSizeRel CACHE STRING "Build type" FORCE)
 endif ()
 
-set(MBR_HEX ${SOFTDEVICE}/mbr/hex/mbr_nrf52_2.4.1_mbr.hex)
-
-target_sources(bootloader PUBLIC
+project(Adafruit_nRF52_Bootloader C ASM)
+set(CMAKE_EXECUTABLE_SUFFIX .elf)
+add_executable(bootloader
   # src
   src/dfu_ble_svc.c
   src/dfu_init.c
@@ -55,99 +53,108 @@ target_sources(bootloader PUBLIC
   src/main.c
   src/screen.c
   src/images.c
+  )
+
+if (SIGNED_FW)
+  target_sources(bootloader PUBLIC
+    ${TCRYPT_DIR}/source/sha256.c
+    ${TCRYPT_DIR}/source/ecc.c
+    ${TCRYPT_DIR}/source/ecc_dsa.c
+    ${TCRYPT_DIR}/source/utils.c
+  )
+
+  target_include_directories(bootloader PUBLIC
+    ${TCRYPT_DIR}/include
+  )
+endif ()
+
+target_sources(bootloader PUBLIC
   src/boards/boards.c
   # nrfx
-  ${NRFX}/drivers/src/nrfx_power.c
-  ${NRFX}/drivers/src/nrfx_nvmc.c
-  ${NRFX}/mdk/system_${MCU_VARIANT}.c
+  ${NRFX_DIR}/drivers/src/nrfx_power.c
+  ${NRFX_DIR}/drivers/src/nrfx_nvmc.c
+  ${NRFX_DIR}/mdk/system_${MCU_VARIANT}.c
   # sdk 11
-  ${SDK11}/libraries/bootloader_dfu/bootloader.c
-  ${SDK11}/libraries/bootloader_dfu/bootloader_settings.c
-  ${SDK11}/libraries/bootloader_dfu/bootloader_util.c
-  ${SDK11}/libraries/bootloader_dfu/dfu_transport_serial.c
-  ${SDK11}/libraries/bootloader_dfu/dfu_transport_ble.c
-  ${SDK11}/libraries/bootloader_dfu/dfu_single_bank.c
-  ${SDK11}/ble/ble_services/ble_dfu/ble_dfu.c
-  ${SDK11}/ble/ble_services/ble_dis/ble_dis.c
-  ${SDK11}/drivers_nrf/pstorage/pstorage_raw.c
-  # latest sdk
-  ${SDK}/libraries/timer/app_timer.c
-  ${SDK}/libraries/scheduler/app_scheduler.c
-  ${SDK}/libraries/util/app_error.c
-  ${SDK}/libraries/util/app_util_platform.c
-  ${SDK}/libraries/crc16/crc16.c
-  ${SDK}/libraries/hci/hci_mem_pool.c
-  ${SDK}/libraries/hci/hci_slip.c
-  ${SDK}/libraries/hci/hci_transport.c
-  ${SDK}/libraries/util/nrf_assert.c
-  # ASM
-  ${NRFX}/mdk/gcc_startup_${MCU_VARIANT}.S
+  ${SDK11_DIR}/libraries/bootloader_dfu/bootloader.c
+  ${SDK11_DIR}/libraries/bootloader_dfu/bootloader_settings.c
+  ${SDK11_DIR}/libraries/bootloader_dfu/bootloader_util.c
+  ${SDK11_DIR}/libraries/bootloader_dfu/dfu_transport_serial.c
+  ${SDK11_DIR}/libraries/bootloader_dfu/dfu_transport_ble.c
   )
+
+if (DUALBANK_FW)
+  target_sources(bootloader PUBLIC
+    ${SDK11_DIR}/libraries/bootloader_dfu/dfu_dual_bank.c
+  )
+else ()
+  target_sources(bootloader PUBLIC
+    ${SDK11_DIR}/libraries/bootloader_dfu/dfu_single_bank.c
+  )
+endif ()
+
+target_sources(bootloader PUBLIC
+  ${SDK11_DIR}/ble/ble_services/ble_dfu/ble_dfu.c
+  ${SDK11_DIR}/ble/ble_services/ble_dis/ble_dis.c
+  ${SDK11_DIR}/drivers_nrf/pstorage/pstorage_raw.c
+  # latest sdk
+  ${SDK_DIR}/libraries/timer/app_timer.c
+  ${SDK_DIR}/libraries/scheduler/app_scheduler.c
+  ${SDK_DIR}/libraries/util/app_error.c
+  ${SDK_DIR}/libraries/util/app_util_platform.c
+  ${SDK_DIR}/libraries/crc16/crc16.c
+  ${SDK_DIR}/libraries/hci/hci_mem_pool.c
+  ${SDK_DIR}/libraries/hci/hci_slip.c
+  ${SDK_DIR}/libraries/hci/hci_transport.c
+  ${SDK_DIR}/libraries/util/nrf_assert.c
+  )
+
 target_include_directories(bootloader PUBLIC
   src
   src/boards
   src/boards/${BOARD}
   src/cmsis/include
   src/usb
-  ${TUSB}
+  ${TINYUSB_DIR}
   # nrfx
-  ${NRFX}
-  ${NRFX}/mdk
-  ${NRFX}/hal
-  ${NRFX}/drivers/include
-  ${NRFX}/drivers/src
+  ${NRFX_DIR}
+  ${NRFX_DIR}/mdk
+  ${NRFX_DIR}/hal
+  ${NRFX_DIR}/drivers/include
+  ${NRFX_DIR}/drivers/src
   # sdk 11 for cdc/ble dfu
-  ${SDK11}/libraries/bootloader_dfu
-  ${SDK11}/libraries/bootloader_dfu/hci_transport
-  ${SDK11}/drivers_nrf/pstorage
-  ${SDK11}/ble/common
-  ${SDK11}/ble/ble_services/ble_dfu
-  ${SDK11}/ble/ble_services/ble_dis
+  ${SDK11_DIR}/libraries/bootloader_dfu
+  ${SDK11_DIR}/libraries/bootloader_dfu/hci_transport
+  ${SDK11_DIR}/drivers_nrf/pstorage
+  ${SDK11_DIR}/ble/common
+  ${SDK11_DIR}/ble/ble_services/ble_dfu
+  ${SDK11_DIR}/ble/ble_services/ble_dis
   # later sdk with updated drivers
-  ${SDK}/libraries/timer
-  ${SDK}/libraries/scheduler
-  ${SDK}/libraries/crc16
-  ${SDK}/libraries/util
-  ${SDK}/libraries/hci/config
-  ${SDK}/libraries/hci
-  ${SDK}/libraries/uart
-  ${SDK}/drivers_nrf/delay
-  # Softdevice
-  ${SOFTDEVICE}/mbr/headers
+  ${SDK_DIR}/libraries/timer
+  ${SDK_DIR}/libraries/scheduler
+  ${SDK_DIR}/libraries/crc16
+  ${SDK_DIR}/libraries/util
+  ${SDK_DIR}/libraries/hci/config
+  ${SDK_DIR}/libraries/hci
+  ${SDK_DIR}/libraries/uart
+  ${SDK_DIR}/drivers_nrf/delay
   )
 
-# Debug option
+# Debug linker file
 if (CMAKE_BUILD_TYPE STREQUAL "Debug")
-  # TODO not work yet, also need to add segger rtt, DFU_APP_DATA_RESERVED=0, BOOTLOADER_REGION_START=0xED000
   set(LD_FILE ${CMAKE_CURRENT_LIST_DIR}/linker/${MCU_VARIANT}_debug.ld)
-
-  target_sources(bootloader PUBLIC
-    lib/SEGGER_RTT/RTT/SEGGER_RTT.c
-    )
-  target_include_directories(bootloader PUBLIC
-    lib/SEGGER_RTT/RTT
-    )
-
-  target_compile_definitions(bootloader PUBLIC
-    CFG_DEBUG
-    SEGGER_RTT_MODE_DEFAULT=SEGGER_RTT_MODE_BLOCK_IF_FIFO_FULL
-    DFU_APP_DATA_RESERVED=0
-    )
-
-  if (MCU_VARIANT STREQUAL "nrf52840")
-    target_compile_definitions(bootloader PUBLIC BOOTLOADER_REGION_START=0xEA000)
-  else ()
-    target_compile_definitions(bootloader PUBLIC BOOTLOADER_REGION_START=0x6D000)
-  endif ()
 else ()
   set(LD_FILE ${CMAKE_CURRENT_LIST_DIR}/linker/${MCU_VARIANT}.ld)
 endif ()
 
+# the linker script INCLUDEs nrf_common.ld from linker/, not nrfx's copy
 target_link_options(bootloader PUBLIC
   "LINKER:--script=${LD_FILE}"
-  -L${NRFX}/mdk
+  -L${CMAKE_CURRENT_LIST_DIR}/linker
+  "LINKER:-Map=$<TARGET_FILE:bootloader>.map"
+  "LINKER:-cref"
   --specs=nosys.specs --specs=nano.specs
   )
+target_link_libraries(bootloader PUBLIC -Wl,--start-group m c -Wl,--end-group)
 target_compile_options(bootloader PUBLIC
   -fno-builtin
   -fshort-enums
@@ -167,11 +174,48 @@ target_compile_options(bootloader PUBLIC
   -Wno-endif-labels
   -Wunreachable-code
   # Suppress warning caused by SDK
-  -Wno-unused-parameter -Wno-expansion-to-defined
+  -Wno-unused-parameter -Wno-expansion-to-defined -Wno-array-bounds
   )
+
+# Nordic SoftDevice headers have inline asm with broken constraints: gcc-11's IPA-modref pass drops the
+# arguments of SVCALL() wrappers and breaks the bootloader
+include(CheckCCompilerFlag)
+check_c_compiler_flag(-fno-ipa-modref HAS_FNO_IPA_MODREF)
+if (HAS_FNO_IPA_MODREF)
+  target_compile_options(bootloader PUBLIC -fno-ipa-modref)
+endif ()
+
 target_compile_definitions(bootloader PUBLIC
+  __HEAP_SIZE=0
   SOFTDEVICE_PRESENT
+  CONFIG_GPIO_AS_PINRESET
   )
+
+# board.cmake sets USE_NFCT when the board uses the NFC pins as NFC
+if (NOT USE_NFCT)
+  target_compile_definitions(bootloader PUBLIC CONFIG_NFCT_PINS_AS_GPIOS)
+endif ()
+
+if (SIGNED_FW)
+  if (SIGNED_FW_QX STREQUAL "" OR SIGNED_FW_QY STREQUAL "")
+    message(FATAL_ERROR "SIGNED_FW requires SIGNED_FW_QX and SIGNED_FW_QY to be set")
+  endif ()
+  string(REPLACE " " "" SIGNED_FW_QX_STR "${SIGNED_FW_QX}")
+  string(REPLACE " " "" SIGNED_FW_QY_STR "${SIGNED_FW_QY}")
+  target_compile_definitions(bootloader PUBLIC
+    SIGNED_FW
+    "SIGNED_FW_QX=${SIGNED_FW_QX_STR}"
+    "SIGNED_FW_QY=${SIGNED_FW_QY_STR}"
+  )
+endif ()
+
+if (FORCE_UF2)
+  target_compile_definitions(bootloader PUBLIC FORCE_UF2)
+endif ()
+
+if (DEFAULT_TO_OTA_DFU)
+  target_compile_definitions(bootloader PUBLIC DEFAULT_TO_OTA_DFU)
+endif ()
 
 if (TRACE_ETM STREQUAL "1")
   # ENABLE_TRACE will cause system_nrf5x.c to set up ETM trace
@@ -181,31 +225,31 @@ endif ()
 if (MCU_VARIANT STREQUAL "nrf52")
   # UART transport
   target_sources(bootloader PUBLIC
-    ${SDK}/libraries/uart/app_uart.c
-    ${SDK}/drivers_nrf/uart/nrf_drv_uart.c
-    ${SDK}/drivers_nrf/common/nrf_drv_common.c
+    ${SDK_DIR}/libraries/uart/app_uart.c
+    ${SDK_DIR}/drivers_nrf/uart/nrf_drv_uart.c
+    ${SDK_DIR}/drivers_nrf/common/nrf_drv_common.c
     )
   target_include_directories(bootloader PUBLIC
-    ${SDK11}/libraries/util
-    ${SDK}/drivers_nrf/common
-    ${SDK}/drivers_nrf/uart
+    ${SDK11_DIR}/libraries/util
+    ${SDK_DIR}/drivers_nrf/common
+    ${SDK_DIR}/drivers_nrf/uart
     )
 else ()
   # USB transport
   target_sources(bootloader PUBLIC
     src/boards/${BOARD}/pinconfig.c
-    src/usb/msc_uf2.c
-    src/usb/usb.c
     src/usb/usb_desc.c
+    src/usb/msc_uf2.c
     src/usb/uf2/ghostfat.c
+    src/usb/usb.c
     # TinyUSB
-    ${TUSB}/portable/nordic/nrf5x/dcd_nrf5x.c
-    ${TUSB}/common/tusb_fifo.c
-    ${TUSB}/device/usbd.c
-    ${TUSB}/device/usbd_control.c
-    ${TUSB}/class/cdc/cdc_device.c
-    ${TUSB}/class/msc/msc_device.c
-    ${TUSB}/tusb.c
+    ${TINYUSB_DIR}/portable/nordic/nrf5x/dcd_nrf5x.c
+    ${TINYUSB_DIR}/common/tusb_fifo.c
+    ${TINYUSB_DIR}/device/usbd.c
+    ${TINYUSB_DIR}/device/usbd_control.c
+    ${TINYUSB_DIR}/class/cdc/cdc_device.c
+    ${TINYUSB_DIR}/class/msc/msc_device.c
+    ${TINYUSB_DIR}/tusb.c
     )
 endif ()
 
@@ -213,128 +257,205 @@ endif ()
 # MCU Variant differences
 # Supported are: nrf52 (nrf52832), nrf52833, nrf52840
 #----------------------------------------------------
+
 if (MCU_VARIANT STREQUAL "nrf52")
-  set(SD_NAME s132)
   set(DFU_DEV_REV 0xADAF)
   set(DFU_APP_DATA_RESERVED 7*4096)
-  target_compile_definitions(bootloader PUBLIC
-    NRF52
-    NRF52832_XXAA
-    S132
-    )
-  target_include_directories(bootloader PUBLIC
-    ${SOFTDEVICE}/s132_nrf52_6.1.1/s132_nrf52_6.1.1_API/include
-    )
-
+  target_compile_definitions(bootloader PUBLIC NRF52 NRF52832_XXAA)
 elseif (MCU_VARIANT STREQUAL "nrf52833")
-  set(SD_NAME s140)
   set(DFU_DEV_REV 52833)
   set(DFU_APP_DATA_RESERVED 7*4096)
-  target_compile_definitions(bootloader PUBLIC
-    NRF52833_XXAA
-    S140
-    )
-  target_include_directories(bootloader PUBLIC
-    ${SOFTDEVICE}/s140_nrf52_6.1.1/s140_nrf52_6.1.1_API/include
-    )
-
+  target_compile_definitions(bootloader PUBLIC NRF52833_XXAA)
 elseif (MCU_VARIANT STREQUAL "nrf52840")
-  set(SD_NAME s140)
   set(DFU_DEV_REV 52840)
   # App reserved 40KB (8+32) to match circuitpython for 840
   set(DFU_APP_DATA_RESERVED 10*4096)
-  target_compile_definitions(bootloader PUBLIC
-    NRF52840_XXAA
-    S140
-    )
-  target_include_directories(bootloader PUBLIC
-    ${SOFTDEVICE}/s140_nrf52_6.1.1/s140_nrf52_6.1.1_API/include
-    )
-
+  target_compile_definitions(bootloader PUBLIC NRF52840_XXAA)
 else ()
   message(FATAL_ERROR "MCU_VARIANT ${MCU_VARIANT} is unknown")
 endif ()
 
-set(SD_FILENAME ${SD_NAME}_nrf52_${SD_VERSION})
-set(SD_HEX ${SOFTDEVICE}/${SD_FILENAME}/${SD_FILENAME}_softdevice.hex)
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/softdevice.cmake)
 
-if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+string(TOUPPER ${SD_NAME} SD_NAME_UPPER)
+target_compile_definitions(bootloader PUBLIC ${SD_NAME_UPPER})
+target_include_directories(bootloader PUBLIC
+  ${SOFTDEVICE_DIR}/${SD_FILENAME}/${SD_FILENAME}_API/include
+  ${SOFTDEVICE_DIR}/${SD_FILENAME}/${SD_FILENAME}_API/include/nrf52
+  )
+
+# debug build
+if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+  # TODO not work yet, also need to add segger rtt, DFU_APP_DATA_RESERVED=0, BOOTLOADER_REGION_START=0xED000
+  target_sources(bootloader PUBLIC lib/SEGGER_RTT/RTT/SEGGER_RTT.c)
+  target_include_directories(bootloader PUBLIC lib/SEGGER_RTT/RTT)
+  target_compile_definitions(bootloader PUBLIC
+    CFG_DEBUG
+    SEGGER_RTT_MODE_DEFAULT=SEGGER_RTT_MODE_BLOCK_IF_FIFO_FULL
+    DFU_APP_DATA_RESERVED=0
+  )
+  if (MCU_VARIANT STREQUAL "nrf52840")
+    target_compile_definitions(bootloader PUBLIC BOOTLOADER_REGION_START=0xEA000)
+  else ()
+    target_compile_definitions(bootloader PUBLIC BOOTLOADER_REGION_START=0x6D000)
+  endif ()
+else ()
   target_compile_definitions(bootloader PUBLIC DFU_APP_DATA_RESERVED=${DFU_APP_DATA_RESERVED})
 endif ()
+
+# startup assembled last: make links it after the C objects (SEGGER_RTT.c in a debug build included)
+target_sources(bootloader PUBLIC ${NRFX_DIR}/mdk/gcc_startup_${MCU_VARIANT}.S)
+
+#----------------------------------
+# ANT_LICENSE_KEY handling
+#----------------------------------
+if (DEFINED ANT_LICENSE_KEY)
+  target_compile_definitions(bootloader PUBLIC ANT_LICENSE_KEY="${ANT_LICENSE_KEY}")
+endif()
 
 #----------------------------------
 # Get UF2 version from git
 #----------------------------------
-execute_process(COMMAND git describe --dirty --always --tags OUTPUT_VARIABLE GIT_VERSION)
+execute_process(COMMAND git describe --dirty --always --tags OUTPUT_VARIABLE GIT_VERSION
+  WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR})
 string(STRIP ${GIT_VERSION} GIT_VERSION)
 
-execute_process(COMMAND bash "-c" "git submodule status | cut -d\" \" -f3,4 | paste -s -d\" \" -"
-  OUTPUT_VARIABLE GIT_SUBMODULE_VERSIONS
-  )
-string(STRIP ${GIT_SUBMODULE_VERSIONS} GIT_SUBMODULE_VERSIONS)
-string(REPLACE ../ "" GIT_SUBMODULE_VERSIONS ${GIT_SUBMODULE_VERSIONS})
-string(REPLACE lib/ "" GIT_SUBMODULE_VERSIONS ${GIT_SUBMODULE_VERSIONS})
+# Extract semantic version numbers (MAJOR.MINOR.PATCH) from GIT_VERSION.
+# Supports tags like:
+#   v1.2.3
+#   1.2.3
+#   1.2.3-147-gd71abcd
+# If the version string does not match MAJOR.MINOR.PATCH, defaults to 0.0.0.
+if(GIT_VERSION MATCHES "^v?([0-9]+)\\.([0-9]+)\\.([0-9]+)")
+  set(RELEASE_VERSION_MAJOR ${CMAKE_MATCH_1})
+  set(RELEASE_VERSION_MINOR ${CMAKE_MATCH_2})
+  set(RELEASE_VERSION_PATCH ${CMAKE_MATCH_3})
+else()
+  set(RELEASE_VERSION_MAJOR 0)
+  set(RELEASE_VERSION_MINOR 0)
+  set(RELEASE_VERSION_PATCH 0)
+endif()
+math(EXPR MK_BOOTLOADER_VERSION "((${RELEASE_VERSION_MAJOR} << 16) | (${RELEASE_VERSION_MINOR} << 8) | ${RELEASE_VERSION_PATCH})")
 
-string(REPLACE "-" ";" RELEASE_VERSION ${GIT_VERSION})
-list(GET RELEASE_VERSION 0 RELEASE_VERSION)
-string(REPLACE "." ";" RELEASE_VERSION ${RELEASE_VERSION})
-list(GET RELEASE_VERSION 0 RELEASE_VERSION_MAJOR)
-list(GET RELEASE_VERSION 1 RELEASE_VERSION_MINOR)
-list(GET RELEASE_VERSION 2 RELEASE_VERSION_PATCH)
-math(EXPR MK_BOOTLOADER_VERSION "(${RELEASE_VERSION_MAJOR} << 16) + (${RELEASE_VERSION_MINOR} << 8) + ${RELEASE_VERSION_PATCH}")
-
-cmake_print_variables(GIT_VERSION GIT_SUBMODULE_VERSIONS MK_BOOTLOADER_VERSION)
+cmake_print_variables(GIT_VERSION MK_BOOTLOADER_VERSION)
 
 target_compile_definitions(bootloader PUBLIC
-  UF2_VERSION_BASE="${GIT_VERSION}"
-  UF2_VERSION="${GIT_VERSION} - ${GIT_SUBMODULE_VERSIONS}"
+  UF2_VERSION="${GIT_VERSION}"
   BLEDIS_FW_VERSION="${GIT_VERSION} ${SD_NAME} ${SD_VERSION}"
   MK_BOOTLOADER_VERSION=${MK_BOOTLOADER_VERSION}
   )
 
-#----------------------------------
-# Post build
-#----------------------------------
-
-# run size after build
-add_custom_command(TARGET bootloader POST_BUILD
-  COMMAND ${CMAKE_SIZE} $<TARGET_FILE:bootloader>
-  )
-
 # Add bin/hex output
 add_custom_command(TARGET bootloader POST_BUILD
-  COMMAND ${CMAKE_OBJCOPY} -Obinary $<TARGET_FILE:bootloader> $<TARGET_FILE_DIR:bootloader>/bootloader.bin
-  COMMAND ${CMAKE_OBJCOPY} -Oihex $<TARGET_FILE:bootloader> $<TARGET_FILE_DIR:bootloader>/bootloader.hex
-  COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/tools/hexmerge.py --overlap=replace -o $<TARGET_FILE_DIR:bootloader>/bootloader_mbr.hex $<TARGET_FILE_DIR:bootloader>/bootloader.hex ${MBR_HEX}
-  COMMAND ${Python_EXECUTABLE} ${UF2CONV_PY} -f ${UF2_FAMILY_ID_BOOTLOADER} -c -o $<TARGET_FILE_DIR:bootloader>/bootloader_mbr.uf2 $<TARGET_FILE_DIR:bootloader>/bootloader_mbr.hex
+  COMMAND ${CMAKE_OBJCOPY} -Obinary $<TARGET_FILE:bootloader> ${CMAKE_CURRENT_BINARY_DIR}/bootloader.bin
+  COMMAND ${CMAKE_OBJCOPY} -Oihex $<TARGET_FILE:bootloader> ${CMAKE_CURRENT_BINARY_DIR}/bootloader.hex
+  COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/tools/hexmerge.py --overlap=replace -o ${CMAKE_CURRENT_BINARY_DIR}/bootloader_mbr.hex ${CMAKE_CURRENT_BINARY_DIR}/bootloader.hex ${MBR_HEX}
+  COMMAND ${Python_EXECUTABLE} ${UF2CONV_PY} -f ${UF2_FAMILY_ID_BOOTLOADER} -c -o ${CMAKE_CURRENT_BINARY_DIR}/bootloader_mbr.uf2 ${CMAKE_CURRENT_BINARY_DIR}/bootloader_mbr.hex
+  BYPRODUCTS
+    ${CMAKE_CURRENT_BINARY_DIR}/bootloader.bin
+    ${CMAKE_CURRENT_BINARY_DIR}/bootloader.hex
+    ${CMAKE_CURRENT_BINARY_DIR}/bootloader_mbr.hex
+    ${CMAKE_CURRENT_BINARY_DIR}/bootloader_mbr.uf2
   VERBATIM)
+
+# Release artifacts, with the names the make build gave them
+# Paths are spelled out: OUTPUT takes no generator expressions before CMake 3.20
+set(OUT_NAME ${BOARD}_bootloader-${GIT_VERSION})
+set(MERGED_NAME ${OUT_NAME}_${SD_NAME}_${SD_VERSION})
+set(BL_HEX ${CMAKE_CURRENT_BINARY_DIR}/bootloader.hex)
+set(BL_MBR_HEX ${CMAKE_CURRENT_BINARY_DIR}/bootloader_mbr.hex)
+set(BL_MBR_UF2 ${CMAKE_CURRENT_BINARY_DIR}/bootloader_mbr.uf2)
+set(NOSD_HEX ${CMAKE_CURRENT_BINARY_DIR}/${OUT_NAME}_nosd.hex)
+set(MERGED_HEX ${CMAKE_CURRENT_BINARY_DIR}/${MERGED_NAME}.hex)
+set(UPDATE_UF2 ${CMAKE_CURRENT_BINARY_DIR}/update-${OUT_NAME}_nosd.uf2)
+set(MERGED_ZIP ${CMAKE_CURRENT_BINARY_DIR}/${MERGED_NAME}.zip)
+
+add_custom_command(OUTPUT ${MERGED_HEX}
+  COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/tools/hexmerge.py -o ${MERGED_HEX} ${BL_HEX} ${SD_HEX}
+  DEPENDS bootloader ${BL_HEX} ${SD_HEX} ${CMAKE_CURRENT_LIST_DIR}/tools/hexmerge.py
+  VERBATIM)
+add_custom_command(OUTPUT ${UPDATE_UF2}
+  COMMAND ${CMAKE_COMMAND} -E copy ${BL_MBR_UF2} ${UPDATE_UF2}
+  DEPENDS bootloader ${BL_MBR_UF2}
+  VERBATIM)
+add_custom_command(OUTPUT ${NOSD_HEX}
+  COMMAND ${CMAKE_COMMAND} -E copy ${BL_MBR_HEX} ${NOSD_HEX}
+  DEPENDS bootloader ${BL_MBR_HEX}
+  VERBATIM)
+set(RELEASE_FILES ${MERGED_HEX} ${UPDATE_UF2} ${NOSD_HEX})
+
+# DFU package (bootloader + SoftDevice) for adafruit-nrfutil over CDC/serial
+find_program(NRFUTIL adafruit-nrfutil)
+if (NRFUTIL)
+  add_custom_command(OUTPUT ${MERGED_ZIP}
+    COMMAND ${NRFUTIL} dfu genpkg --dev-type 0x0052 --dev-revision ${DFU_DEV_REV} --bootloader ${BL_HEX} --softdevice ${SD_HEX} ${MERGED_ZIP}
+    DEPENDS bootloader ${BL_HEX} ${SD_HEX}
+    VERBATIM)
+  list(APPEND RELEASE_FILES ${MERGED_ZIP})
+else ()
+  message(WARNING "adafruit-nrfutil not found: ${MERGED_NAME}.zip is not built")
+endif ()
+
+add_custom_target(release ALL DEPENDS ${RELEASE_FILES})
+
+# one artifact each, what the Makefile wrapper's flash and debug targets build
+add_custom_target(nosd-hex DEPENDS ${NOSD_HEX})
+add_custom_target(merged-hex DEPENDS ${MERGED_HEX})
+if (NRFUTIL)
+  add_custom_target(dfu-zip DEPENDS ${MERGED_ZIP})
+endif ()
+
+# what the Makefile wrapper's flash, debug and copy recipes need, read by its sub-make
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/make_vars.mk
+  "MCU_VARIANT = ${MCU_VARIANT}\n"
+  "SD_HEX = ${SD_HEX}\n"
+  "MBR_HEX = ${MBR_HEX}\n"
+  "BL_ELF = ${CMAKE_CURRENT_BINARY_DIR}/bootloader${CMAKE_EXECUTABLE_SUFFIX}\n"
+  "NOSD_HEX = ${NOSD_HEX}\n"
+  "UPDATE_UF2 = ${UPDATE_UF2}\n"
+  "MERGED_HEX = ${MERGED_HEX}\n"
+  "MERGED_ZIP = ${MERGED_ZIP}\n"
+  )
 
 #----------------------------------
 # Flashing target
 #----------------------------------
-
 if (NOT DEFINED NRFJPROG)
   set(NRFJPROG nrfjprog)
 endif()
 
-add_custom_target(flash-jlink
+add_custom_target(flash-bootloader
   DEPENDS bootloader
   COMMAND ${NRFJPROG} --program $<TARGET_FILE:bootloader> --verify --sectoranduicrerase -f nrf52 --reset
   )
 
 add_custom_target(flash-uf2
   DEPENDS bootloader
-  COMMAND ${Python_EXECUTABLE} ${UF2CONV_PY} -f ${UF2_FAMILY_ID_BOOTLOADER} --deploy $<TARGET_FILE_DIR:bootloader>/bootloader_mbr.uf2
+  COMMAND ${Python_EXECUTABLE} ${UF2CONV_PY} -f ${UF2_FAMILY_ID_BOOTLOADER} --deploy ${CMAKE_CURRENT_BINARY_DIR}/bootloader_mbr.uf2
   )
 
 add_custom_target(flash-sd
-  COMMAND ${NRFJPROG} --program ${SD_HEX} --verify --sectorerase -f nrf52 --reset
+  DEPENDS flash-mbr
+  COMMAND ${NRFJPROG} --program ${SD_HEX} --verify --sectorerase -f nrf52
   )
 
 add_custom_target(flash-mbr
-  COMMAND ${NRFJPROG} --program ${MBR_HEX} --verify --sectorerase -f nrf52 --reset
+  COMMAND ${NRFJPROG} --program ${MBR_HEX} --verify --sectorerase -f nrf52
   )
 
 add_custom_target(flash-erase
   COMMAND ${NRFJPROG} -f nrf52 --eraseall
   )
+
+add_custom_target(flash-all
+  DEPENDS bootloader flash-erase
+  COMMAND ${NRFJPROG} --program ${SD_HEX} --verify --sectorerase -f nrf52
+  COMMAND ${NRFJPROG} --program $<TARGET_FILE:bootloader> --verify --sectoranduicrerase -f nrf52 --reset
+  )
+
+# flash skip crc magic ( app valid = 0x0001, crc = 0x0000 )
+#add_custom_target(flash-skip-crc
+#  #COMMAND ${NRFJPROG} --memwr $(BOOT_SETTING_ADDR) --val 0x00000001 -f nrf52
+#  COMMAND ${NRFJPROG} --memwr 0xFF000 --val 0x00000001 -f nrf52
+#  #COMMAND ${NRFJPROG} --memwr 0x7F000 --val 0x00000001 -f nrf52
+#  )

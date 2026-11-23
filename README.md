@@ -24,14 +24,21 @@ Officially supported boards are:
 - Adafruit Metro nRF52840 Express
 - [Raytac MDBT50Q-RX Dongle](https://www.adafruit.com/product/5199)
 
-In addition, there is also lots of other 3rd-party boards which are added by other makers, users and community. Check out the [complete list of all boards here](/src/boards).
+In addition, there is also lots of other 3rd-party boards which are added by other makers, users and community. Check
+out the [complete list of all boards here](/supported_boards.md).
 
 ## Features
 
-- DFU over Serial and OTA ( application, Bootloader+SD )
+- DFU over Serial and OTA (application, Bootloader+SD)
 - Self-upgradable via Serial and OTA
 - DFU using UF2 (https://github.com/Microsoft/uf2) (application only)
 - Auto-enter DFU briefly on startup for DTR auto-reset trick (832 only)
+- Supports dual bank firmware updates (disabled by default)
+- Supports signed firmware updates (disabled by default)
+
+Note: For OTA, `Packet Receipt Notification` (PRN) must be 8 or less, which can be configured in nRF DFU. Otherwise, the
+bootloader will run out of
+memory.
 
 ## How to use
 
@@ -101,7 +108,7 @@ Pre-builtin binaries are available on GitHub [releases](https://github.com/adafr
 Note: The bootloader can be downgraded. Since the binary release is a merged version of
 both bootloader and the Nordic SoftDevice, you can freely upgrade/downgrade to any version you like.
 
-## How to compile and build
+## How to compile and build 
 
 You should only continue if you are looking to develop bootloader for your own.
 You must have have a J-Link available to "unbrick" your device.
@@ -109,20 +116,31 @@ You must have have a J-Link available to "unbrick" your device.
 ### Prerequisites
 
 - ARM GCC
+- [CMake](https://cmake.org/)
+- [Ninja](https://ninja-build.org/), for the CMake build below (as CI does)
 - Nordic's [nRF5x Command Line Tools](https://www.nordicsemi.com/Software-and-Tools/Development-Tools/nRF-Command-Line-Tools)
 - [Python IntelHex](https://pypi.org/project/IntelHex/)
 
 ### Build:
 
-Firstly clone this repo with following commands
+Firstly clone this repo including its submodules with following command:
 
+```
+git clone --recurse-submodules https://github.com/adafruit/Adafruit_nRF52_Bootloader
+```
+
+For git versions before `2.13.0` you have to do that manually:
 ```
 git clone https://github.com/adafruit/Adafruit_nRF52_Bootloader
 cd Adafruit_nRF52_Bootloader
 git submodule update --init
 ```
 
-Then build it with `make BOARD={board} all`, for example:
+#### Build using `make`
+
+The Makefile is a thin wrapper over the CMake build below: it configures `_build/build-{board}` with CMake's Unix
+Makefiles generator (`make CMAKE_GENERATOR=Ninja ...` selects another), then builds through it. Build with
+`make BOARD={board} all`, adding `-j` for a parallel build, for example:
 
 ```
 make BOARD=feather_nrf52840_express all
@@ -131,15 +149,56 @@ make BOARD=feather_nrf52840_express all
 For the list of supported boards, run `make` without `BOARD=` :
 
 ```
-$ make
+make
 You must provide a BOARD parameter with 'BOARD='
-Supported boards are: feather_nrf52840_express feather_nrf52840_express pca10056
-Makefile:90: *** BOARD not defined.  Stop
+Supported boards are:
+- adm_b_nrf52840_1
+- ae_bl652_bo
+...
+Makefile:37: *** BOARD not defined.  Stop.
+```
+
+Each `make` configures from an empty CMake cache, so only the variables of that invocation apply: `DEBUG=1`,
+`DUALBANK_FW=1`, `DEFAULT_TO_OTA_DFU=1`, `SIGNED_FW=1` with `SIGNED_FW_QX`/`SIGNED_FW_QY`, `FORCE_UF2=1`,
+`SD_VERSION`, `SD_NAME`, `SD_HEX`, `USE_NFCT=yes|no`, `CROSS_COMPILE`; `BUILD=` and `BIN=` move the build and
+`copy-artifact` directories. Local defaults can go in an untracked `Makefile.user`.
+
+#### Build using `cmake`
+
+CI and releases build with CMake. Initialize your build environment by passing your board to `cmake` via
+`-DBOARD={board}`:
+
+```bash
+cmake -S . -B build -G Ninja -DBOARD=feather_nrf52840_express
+```
+
+And then build it with:
+
+```bash
+cmake --build build
+```
+
+To list all supported targets, run:
+
+```bash
+cmake --build build --target help
+```
+
+The build directory then holds the release artifacts: `{board}_bootloader-{version}_{sd}_{sdversion}.hex` (bootloader,
+MBR and SoftDevice), the matching `.zip` DFU package (needs `adafruit-nrfutil`),
+`update-{board}_bootloader-{version}_nosd.uf2` (bootloader self-update) and `{board}_bootloader-{version}_nosd.hex`
+(bootloader and MBR). Options: `-DDUALBANK_FW=ON`, `-DDEFAULT_TO_OTA_DFU=ON`,
+`-DSIGNED_FW=ON -DSIGNED_FW_QX=... -DSIGNED_FW_QY=...`, `-DFORCE_UF2=ON`.
+
+To build individual targets, specify it with `cmake --build`:
+
+```bash
+cmake --build build --target bootloader
 ```
 
 ### Flash
 
-To flash the bootloader (without softdevice/mbr) using JLink:
+To flash the bootloader and MBR (without SoftDevice) using JLink:
 
 ```
 make BOARD=feather_nrf52840_express flash
@@ -157,7 +216,7 @@ To upgrade the bootloader using DFU Serial via port /dev/ttyACM0
 make BOARD=feather_nrf52840_express SERIAL=/dev/ttyACM0 flash-dfu
 ```
 
-To flash SoftDevice (will also erase chip):
+To flash SoftDevice (erases only the sectors it writes):
 
 ```
 make BOARD=feather_nrf52840_express flash-sd
@@ -169,6 +228,59 @@ To flash MBR only
 make BOARD=feather_nrf52840_express flash-mbr
 ```
 
+To erase the whole chip: `make BOARD=feather_nrf52840_express erase`.
+
+### Dual bank firmware support:
+
+This bootloader can split the FLASH memory into 2 partitions, one for the last successfully uploaded firmware, and the other for the new firmware that is being uploaded. In case the firmware upload fails, the bootloader will revert to the last working firmware version. The only drawback is that the maximum firmware size is half of the device FLASH size: That is why it is disabled by default.
+You can enable this feature by passing DUALBANK_FW=1 to the make process while compiling the bootloader
+
+### Signed firmware support:
+This bootloader can validate that the uploaded firmware is digitally signed, and refuse to install unsigned or signed with the improper key firmware. Because this will make Arduino uploads stop working (because they are not digitally signed), this feature is disabled by default.
+But if you want to ensure noone else is allowed to upload firmware to your device, this option is probably what you want to enable.
+
+To create a signing key, you will need the adafruit-nrfutil utility. First, generate a signing key and store at given path by using
+
+```
+adafruit-nrfutil keys --gen-key stored_key.pem
+```
+
+This command will create a signing key and store it in the file stored_key.pem.  STORE THIS FILE IN A SAFE PLACE, as without it, you won't be able to sign your firmware packages, and the bootloader will refuse to flash them!!
+
+Now, you must show the verification key (that is calculated from the signing key):
+
+```
+adafruit-nrfutil keys --show-vk code stored_key.pem
+```
+
+This command will read your signing key (from the file stored_key.pem) and display C source code with the Qx and Qy arrays: Something along the lines
+
+```
+static uint8_t Qx[] = { ... };
+static uint8_t Qy[] = { ... };
+```
+
+You must save the Qx and Qy values, remove all spaces, and pass them to the make command line
+```
+make BOARD=feather_nrf52840_express SIGNED_FW=1 SIGNED_FW_QX='Qx values' SIGNED_FW_QY='Qy values'
+```
+
+And replace Qx values with the Qx array values, and the Qy values with the Qy array values. That will create a bootloader that ONLY accepts firmware signed with the stored_key.pem signing key. Take into account that the option SIGNED_FW=1 is what enables to build a bootloader that enforces signing, and will ALSO result in disabling UF2 support, as UF2 format does NOT support signing keys. There is an option (only for testing!) called FORCE_UF2 that will FORCE UF2 support on bootloaders that enforce firmware security. It is there to bypass security so you can test a secure bootloader and have a way to recover it something goes wrong, but should NEVER be used if you want to enforce security
+
+Finally, to create a signed firmware application/bootloader update package, you can use, for example
+
+```
+adafruit-nrfutil dfu genpkg --dev-type 0x0052 --sd-req 0x0123 --application "application.hex" --key-file "stored_key.pem" "application_package.zip"
+```
+
+Please, use full paths for all files. The examples omit them for clarity!
+
+And, to upload it to your device, 
+
+```
+adafruit-nrfutil.exe --verbose dfu serial -pkg "application_package.zip" -p /dev/tty0 -b 115200
+```
+
 ### Common makefile problems
 
 #### `arm-none-eabi-gcc`: No such file or directory
@@ -176,7 +288,7 @@ make BOARD=feather_nrf52840_express flash-mbr
 If you get the following error ...
 
 ```
-$ make BOARD=feather_nrf52840_express all
+make BOARD=feather_nrf52840_express all
 Compiling file: main.c
 /bin/sh: /usr/bin/arm-none-eabi-gcc: No such file or directory
 make: *** [_build/main.o] Error 127
@@ -185,7 +297,7 @@ make: *** [_build/main.o] Error 127
 ... you may need to pass the location of the GCC ARM toolchain binaries to `make` using
 the variable `CROSS_COMPILE` as below:
 ```
-$ make CROSS_COMPILE=/opt/gcc-arm-none-eabi-9-2019-q4-major/bin/arm-none-eabi- BOARD=feather_nrf52832 all
+make CROSS_COMPILE=/opt/gcc-arm-none-eabi-9-2019-q4-major/bin/arm-none-eabi- BOARD=feather_nrf52832 all
 ```
 
 For other compile errors, check the gcc version with `arm-none-eabi-gcc --version` to insure it is at least 9.x.

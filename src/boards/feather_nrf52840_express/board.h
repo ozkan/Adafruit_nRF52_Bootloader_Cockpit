@@ -25,26 +25,25 @@
 #ifndef _FEATHER_NRF52840_H
 #define _FEATHER_NRF52840_H
 
-#define _PINNUM(port, pin)    ((port)*32 + (pin))
 
 /*------------------------------------------------------------------*/
 /* LED
  *------------------------------------------------------------------*/
 #define LEDS_NUMBER           2
-#define LED_PRIMARY_PIN       _PINNUM(1, 15)
-#define LED_SECONDARY_PIN     _PINNUM(1, 10)
+#define LED_PRIMARY_PIN       PINNUM(1, 15)
+#define LED_SECONDARY_PIN     PINNUM(1, 10)
 #define LED_STATE_ON          1
 
-#define LED_NEOPIXEL          _PINNUM(0, 16)
+#define LED_NEOPIXEL          PINNUM(0, 16)
+#define NEOPIXEL_POWER_PIN    PINNUM(1, 14)
 #define NEOPIXELS_NUMBER      1
 #define BOARD_RGB_BRIGHTNESS  0x040404
 
 /*------------------------------------------------------------------*/
 /* BUTTON
  *------------------------------------------------------------------*/
-#define BUTTONS_NUMBER        2
-#define BUTTON_1              _PINNUM(1, 02)
-#define BUTTON_2              _PINNUM(0, 10)
+#define BUTTON_DFU     PINNUM(1, 02)
+#define BUTTON_DFU_OTA PINNUM(0, 10)
 #define BUTTON_PULL           NRF_GPIO_PIN_PULLUP
 
 //--------------------------------------------------------------------+
@@ -63,7 +62,7 @@
 //------------- UF2 -------------//
 #define UF2_PRODUCT_NAME      "Adafruit Feather nRF52840 Express"
 #define UF2_VOLUME_LABEL      "FTHR840BOOT"
-#define UF2_BOARD_ID          "nRF52840-Feather-revD"
+#define UF2_BOARD_ID          "nRF52840-Feather-revE"
 #define UF2_INDEX_URL         "https://www.adafruit.com/product/4062"
 
 #endif // _FEATHER_NRF52840_H
