@@ -310,8 +310,9 @@ static void check_dfu_mode(void) {
       (*dbl_reset_mem) = DFU_DBL_RESET_MAGIC;
 
       // if RST is pressed during this delay (double reset)--> if will enter dfu
-      NRFX_DELAY_MS(DFU_DBL_RESET_DELAY);
+      //NRFX_DELAY_MS(DFU_DBL_RESET_DELAY);
     }
+    NRFX_DELAY_MS(DFU_DBL_RESET_DELAY);
 #endif
   }
 
